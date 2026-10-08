@@ -451,9 +451,53 @@ def stats() -> Dict:
 
 
 def mute_reply_text(handoff: Optional[Dict] = None) -> str:
-    """AI 静默期间给用户的提示。"""
+    """AI 静默期间给用户的提示文案。"""
     who = (handoff or {}).get("claimed_by_name") or "客服"
     return f"人工客服「{who}」正在为您服务，请稍候。"
+
+
+def muted_reply(handoff: Optional[Dict]) -> str:
+    """静默期间**要不要回话、回什么**。返回空串表示保持安静。
+
+    模式由 HANDOFF_MUTED_MODE 控制：
+
+      never  （默认）完全不回。
+             坐席认领时已经私聊告诉过用户「客服已接入」，
+             之后用户每来一条都回「正在为您服务」纯属噪音 ——
+             用户在等的是**坐席的答复**，不是机器人的复读。
+
+      first  本次接管只回一次，之后安静。
+             适合认领通知可能发不出去的场景。
+
+      always 每条都回（旧行为，建议只在调试时用）。
+
+    `_notified` 由 before_turn() 注入，表示本次接管是否已经提示过用户。
+    """
+    if not handoff:
+        return ""
+    mode = str(getattr(get_settings(), "handoff_muted_mode", "never") or "never").strip().lower()
+    if mode == "always":
+        return mute_reply_text(handoff)
+    if mode == "first":
+        return "" if handoff.get("_notified") else mute_reply_text(handoff)
+    return ""
+
+
+def _muted_notice_sent(handoff_id: str) -> bool:
+    """本次接管是否已经给用户回过话（first 模式用）。"""
+    if not handoff_id:
+        return False
+    try:
+        with session_scope() as s:
+            n = s.execute(
+                select(func.count(ConversationMessage.id)).where(
+                    ConversationMessage.handoff_id == handoff_id,
+                    ConversationMessage.role == ROLE_ASSISTANT,
+                )
+            ).scalar() or 0
+        return int(n) > 0
+    except Exception:
+        return False
 
 
 # ============================================================
@@ -491,9 +535,14 @@ def before_turn(thread_id: str, user_text: str, sender_open_id: str = "") -> Opt
     · 落库用户消息
     · 若该会话已被坐席接管 → 返回工单 dict，调用方必须让 AI 静默
     · 否则返回 None，正常走工作流
+
+    返回的 dict 额外带 `_notified`：本次接管是否已提示过用户，
+    供 muted_reply() 的 first 模式判断。
     """
     h = claimed_handoff(thread_id)
     record_message(thread_id, ROLE_USER, user_text, sender_open_id=sender_open_id)
+    if h:
+        h["_notified"] = _muted_notice_sent(h.get("handoff_id") or "")
     return h
 
 

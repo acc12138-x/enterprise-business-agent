@@ -734,23 +734,21 @@ async def chat_completions(req: ChatCompletionRequest, request: Request,
 
     muted = _hs.before_turn(tid, user_msg, sender_open_id=sender_id or "")
     if muted:
-        final = {
-            "answer": _hs.mute_reply_text(muted),
-            "intent": "human",
-            "flow_status": "waiting",
-        }
+        # 静默期间默认【不回话】（HANDOFF_MUTED_MODE，默认 never）：
+        # 坐席认领时已经私聊告知过用户「客服已接入」，之后用户每来一条
+        # 都回「正在为您服务」只是噪音 —— 用户在等的是坐席的答复。
+        # 注意这里【不能】走 _build_answer：它会把空答案兜底成
+        # 「已转人工，客服稍后接入。」，那就又变成复读了。
+        answer = _hs.muted_reply(muted)
+        if answer:
+            _hs.record_message(tid, "assistant", answer, handoff_id=muted["handoff_id"])
     else:
         final = _try_resume(tid, user_msg)
         if final is None:
             final = _run_graph(user_msg, session_key, req.messages,
                                sender_id=sender_id or "", extra_slots=extra_slots)
-
-    answer = _build_answer(final)
-
-    # ---------- 会话落库 + 必要时转人工（通知坐席）----------
-    if muted:
-        _hs.record_message(tid, "assistant", answer, handoff_id=muted["handoff_id"])
-    else:
+        answer = _build_answer(final)
+        # 会话落库 + 必要时转人工（通知坐席）
         _hs.after_turn(tid, user_msg, answer, final, sender_open_id=sender_id or "")
 
     created = int(time.time())

@@ -132,9 +132,13 @@ async def stream_run(thread_id: str, request: Request,
         yield sse("status", {"type": "status", "message": "开始处理"})
 
         if muted:
-            _ans = _hs.mute_reply_text(muted)
-            _hs.record_message(thread_id, "assistant", _ans,
-                               handoff_id=muted["handoff_id"])
+            # 静默期间默认【不回话】（HANDOFF_MUTED_MODE，默认 never）：
+            # 坐席认领时已经私聊告知过用户，之后每条都回「正在为您服务」
+            # 只是噪音 —— 用户在等的是坐席的答复。
+            _ans = _hs.muted_reply(muted)
+            if _ans:
+                _hs.record_message(thread_id, "assistant", _ans,
+                                   handoff_id=muted["handoff_id"])
             yield sse("terminal", {
                 "type": "terminal", "status": "waiting", "answer": _ans,
                 "confidence": 0.0, "citations": [], "intent": "human",

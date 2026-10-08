@@ -230,3 +230,56 @@ class TestHandoffServiceMuting:
         hs.close(hid, {"id": 999777, "name": "pytest 坐席"})
         assert hs.is_ai_muted(tid) is False
         assert hs.before_turn(tid, "在吗") is None
+
+
+class TestMutedReplyMode:
+    """坐席接管期间 AI 回不回话。
+
+    真实反馈：用户被接管后每发一条都收到同一句「人工客服正在为您服务」，
+    体验很差 —— 坐席认领时已经私聊告知过用户了，之后纯属噪音。
+    默认改成 never（完全不回），用户在等的是坐席的答复。
+    """
+
+    @staticmethod
+    def _set_mode(monkeypatch, mode):
+        from app.config.settings import get_settings
+        monkeypatch.setenv("HANDOFF_MUTED_MODE", mode)
+        get_settings.cache_clear()
+
+    def test_never_keeps_silent(self, monkeypatch):
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, "never")
+        assert hs.muted_reply({"claimed_by_name": "小周"}) == ""
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == ""
+
+    def test_first_replies_only_once(self, monkeypatch):
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, "first")
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": False}) != ""
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == ""
+
+    def test_always_is_legacy_behaviour(self, monkeypatch):
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, "always")
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) != ""
+
+    def test_empty_handoff_is_silent(self, monkeypatch):
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, "always")
+        assert hs.muted_reply(None) == ""
+
+    def test_unknown_mode_falls_back_to_silent(self, monkeypatch):
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, "随便写的")
+        assert hs.muted_reply({"claimed_by_name": "小周"}) == ""
+
+    def test_before_turn_injects_notified_flag(self, monkeypatch):
+        """before_turn 必须带上 _notified，否则 first 模式永远只回一次就哑了。"""
+        from app.services import handoff_service as hs
+
+        tid = "pytest-muted-flag-thread"
+        h = hs.create_handoff(tid, sender_open_id="", reason="标记测试")
+        hs.claim(h["handoff_id"], {"id": 999778, "name": "pytest 坐席"})
+        got = hs.before_turn(tid, "第一条")
+        assert got is not None and "_notified" in got
+        hs.close(h["handoff_id"], {"id": 999778, "name": "pytest 坐席"})

@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     handoff_timeout_seconds: int = 300
     # 转人工后台巡检间隔（秒）
     handoff_patrol_interval: int = 60
+    # 坐席接管期间，AI 静默到什么时候才回话：
+    #   never  完全不回（默认）—— 认领时已私聊告知用户，之后每条都回
+    #          「正在为您服务」纯属噪音，用户在等的是坐席的答复
+    #   first  本次接管只回一次，之后安静
+    #   always 每条都回（旧行为，仅调试用）
+    handoff_muted_mode: str = "never"
     # AI 自动捕获线索：命中「线索意图」时是否自动建线索
     lead_auto_capture: bool = True
 

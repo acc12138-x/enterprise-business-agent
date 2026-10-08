@@ -82,6 +82,10 @@ EVENT_TO_ROLES = {
 
     # HITL
     "hitl_request":           ["supervisor"],
+
+    # 转人工（坐席 = agent 角色）
+    "handoff_created":        ["agent", "supervisor"],
+    "handoff_timeout":        ["supervisor"],
 }
 
 
@@ -103,6 +107,10 @@ EVENT_TO_GROUPS = {
     "sla_warning":            ["sla_group"],
     "sla_overdue":            ["sla_group", "supervisor_group"],
     "sla_overdue_supervisor": ["supervisor_group"],
+
+    # 转人工：客服群（需在 .env 配 FEISHU_WEBHOOK_CS_GROUP，未配置会自动跳过）
+    "handoff_created":        ["cs_group"],
+    "handoff_timeout":        ["cs_group", "supervisor_group"],
 }
 
 

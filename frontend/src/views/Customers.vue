@@ -66,6 +66,19 @@
         <el-table-column prop="total_refunds" label="退款" width="70" align="center" />
         <el-table-column prop="total_complaints" label="投诉" width="70" align="center" />
         <el-table-column prop="total_tickets" label="工单" width="70" align="center" />
+        <!-- 客户归属：谁负责这个客户；来源于哪条线索 -->
+        <el-table-column label="负责人" width="110">
+          <template #default="{ row }">
+            <span v-if="row.owner_name">{{ row.owner_name }}</span>
+            <span v-else style="color:#c0c4cc;">未分配</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="来源线索" width="150">
+          <template #default="{ row }">
+            <span v-if="row.lead_id" style="font-family:monospace; font-size:12px;">{{ row.lead_id }}</span>
+            <span v-else style="color:#c0c4cc;">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click.stop="openDetail(row)">查看</el-button>

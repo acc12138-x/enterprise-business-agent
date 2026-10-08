@@ -21,6 +21,7 @@ from app.workflows.nodes.action_exec import action_exec_node
 from app.workflows.nodes.refund_apply import refund_apply_node
 from app.workflows.nodes.my_tickets_node import my_tickets_node
 from app.workflows.nodes.chitchat_node import chitchat_node
+from app.workflows.nodes.lead_capture import lead_capture_node
 
 
 RULE_INTENTS = {"return", "exchange", "warranty"}
@@ -42,6 +43,8 @@ def route_after_slot(state: AgentState) -> str:
     intent = state.get("intent", "qa")
     if intent == "chitchat":
         return "chitchat_node"
+    if intent == "lead":
+        return "lead_capture_node"
     if intent in RULE_INTENTS:
         return "context_collect"
     if intent == "engineer_query":
@@ -89,6 +92,7 @@ def build_graph():
     g.add_node("refund_apply", refund_apply_node)
     g.add_node("my_tickets_node", my_tickets_node)
     g.add_node("chitchat_node", chitchat_node)
+    g.add_node("lead_capture_node", lead_capture_node)
 
     g.set_entry_point("intent")
 
@@ -133,6 +137,7 @@ def build_graph():
     g.add_edge("refund_apply", END)
     g.add_edge("my_tickets_node", END)
     g.add_edge("chitchat_node", END)
+    g.add_edge("lead_capture_node", END)
     g.add_edge("order_node", END)
     g.add_edge("engineer_query", END)
     g.add_edge("hitl_gate", END)

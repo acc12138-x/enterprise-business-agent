@@ -17,6 +17,9 @@ ROLE_PERMISSIONS = {
         "sla.view", "sla.edit",
         "knowledge.view", "knowledge.edit",
         "system.view", "system.edit",
+        # 线索 + 转人工
+        "lead.view", "lead.edit", "lead.assign",
+        "handoff.view", "handoff.claim", "handoff.reply",
     ],
     "engineer": [
         "ticket.view", "ticket.accept", "ticket.reject", "ticket.resolve",
@@ -29,6 +32,9 @@ ROLE_PERMISSIONS = {
         "refund.view", "refund.create",
         "sla.view",
         "knowledge.view",
+        # 客服是转人工的坐席，也参与线索跟进
+        "handoff.view", "handoff.claim", "handoff.reply",
+        "lead.view", "lead.edit",
     ],
 }
 
@@ -62,6 +68,12 @@ ALL_PERMISSIONS = [
     {"code": "knowledge.edit",   "label": "维护知识库"},
     {"code": "system.view",      "label": "查看系统配置"},
     {"code": "system.edit",      "label": "修改系统配置"},
+    {"code": "lead.view",        "label": "查看线索"},
+    {"code": "lead.edit",        "label": "编辑线索/跟进"},
+    {"code": "lead.assign",      "label": "分配线索负责人"},
+    {"code": "handoff.view",     "label": "查看转人工队列"},
+    {"code": "handoff.claim",    "label": "认领/结束接管"},
+    {"code": "handoff.reply",    "label": "以人工身份回复"},
 ]
 
 

@@ -57,11 +57,27 @@
 - **问题类型路由**：按「原因 / 现象 / 步骤 / 范围 / 注意事项 / 边界」分别用不同 Prompt，并对章节标题做过滤
 
 ### 🧠 Agent 编排（LangGraph）
-- **16 类意图识别**（自研引擎：关键词 + 正则 + 优先级，YAML 可热加载）
+- **17 类意图识别**（自研引擎：关键词 + 正则 + 优先级，YAML 可热加载）
 - **多轮槽位填充**：缺关键字段主动追问，追问上下文可跨轮继承
 - **业务上下文收集**：订单 / 物流 / 商品 / 客户资产聚合
 - **HITL 人工审批**：`interrupt()` 暂停 → 对话内「同意/拒绝」→ 断点恢复，含超时自动取消
 - **SQLite Checkpointer**：中断状态跨进程、跨重启保留
+
+### 🙋 转人工客服（完整闭环）
+- **工单化接管**：`queued → claimed → closed`（超时未接管自动 `timeout` 并升级通知主管）
+- **AI 静默**：坐席一旦认领，该会话入站消息**不再启动工作流**，避免 AI 抢话（入口短路，不浪费 LLM 调用）
+- **坐席台**：队列 / 会话消息流 / 一键认领 / 以「本人」身份回复 / 结束接管（自动插入「已转回智能助手」提示）
+- **通知到人**：转人工即私聊客服群与坐席（`handoff_created` / `handoff_timeout` 事件路由）
+- **会话落库**：入站/出站按条写入 `conversation_messages`（非逐 token），客服台、会话监控、常见问题分析共用一套数据
+- **会话摘要**：自动附带最近几轮对话，坐席不用翻记录
+
+### 📈 客户线索与任务进度
+- **六阶段状态机**：`新建 → 已联系 → 已报价 → 谈判中 → 已成交 / 已流失`，非法流转被拒、流失必填原因
+- **进度自动留痕**：每次阶段变化、报价变化、成交都**自动写一条跟进记录**，不靠人工补记
+- **归属明确**：线索与客户都有负责人；销售池 = 拥有 `lead.edit` 权限的在线人员
+- **自动分配**：按「销售岗优先 → 进行中线索数升序 → id」选人（复用工程师派单的负载思路）
+- **AI 自动捕获线索**：命中「合作 / 采购 / 报价 / 代理」等意图时自动建线索并分配销售（同一会话幂等，不重复建）
+- **漏斗统计**：各阶段数量、成交率、报价/成交金额、平均成交额、按负责人排行
 
 ### 🎫 工单与售后
 - **工单状态机**：`pending → assigned → accepted → in_progress → resolved → closed`
@@ -230,7 +246,7 @@ flowchart LR
 | | frp | 内网穿透，供外部网关回调本地服务 |
 | | 自研 OpenAI 兼容层 | 协议适配、元数据剥离、飞书身份提取、快捷命令短路 |
 | **Agent 编排** | LangGraph 1.2 + `langgraph-checkpoint-sqlite` | 主状态机、条件路由、断点持久化与恢复 |
-| | 自研意图引擎 | YAML 驱动（关键词 + 正则 + 优先级），16 类意图，支持热加载 |
+| | 自研意图引擎 | YAML 驱动（关键词 + 正则 + 优先级），17 类意图，支持热加载 |
 | | 自研规则引擎 | YAML 规则 + 19 个操作符 + 点号路径取值，支持热加载 |
 | **RAG** | Chroma 1.5 | 向量库（embedded 本地持久化 / HTTP 两种模式） |
 | | jieba + rank-bm25 | 中文分词与关键词召回 |
@@ -287,10 +303,16 @@ copy .env.example .env         # Windows
 python scripts/seed_engineers.py     # 1) 工程师
 python scripts/seed_customers.py     # 2) 客户与订单
 python scripts/migrate_users.py      # 3) 迁移为统一人员表 + 默认管理员
+python scripts/migrate_crm.py --seed # 4) 线索 / 转人工建表 + 补列 + 示例销售
 
 # 启动
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
+
+> **已有库升级**（比如线上那台）只需跑第 4 步。`migrate_crm.py` 是**幂等**的：
+> `create_all` 只建缺失的表，`customers` 的 3 个新列会按需 `ALTER TABLE` 补上，
+> 重复执行无副作用。**对线上库执行前先备份**：
+> `cp data/app.db data/app.db.bak-$(date +%Y%m%d-%H%M%S)`
 
 访问 **http://127.0.0.1:8000/docs** 查看 API 文档，**http://127.0.0.1:8000/health** 健康检查。
 
@@ -448,7 +470,7 @@ python scripts/feishu_doctor.py --mobile 13800138000             # 反查本应�
 python scripts/feishu_doctor.py --chat-members oc_xxx            # 列群成员的 open_id
 ```
 
-覆盖范围：意图识别与槽位提取、规则引擎与操作符、文档切片、缓存服务、认证与权限、工单与 SLA 接口。
+覆盖范围：意图识别与槽位提取、规则引擎与操作符、文档切片、缓存服务、认证与权限、工单与 SLA 接口、**客户线索（状态机 / 自动分配 / 自动留痕 / 漏斗统计）**、**转人工（建单 / 认领 / 回复 / 结束 / AI 静默）**。
 
 > **飞书通知排障要点**：`open_id` 按**应用**隔离（跨应用报 `99992361`），
 > 群通知要求**机器人已在群里**（否则报 `230002`）。详见
@@ -509,7 +531,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ## 🗺️ 路线图与已知限制
 
 ### ✅ 已实现
-RAG 混合召回与拒答 · 16 类意图识别 · 规则引擎 · 工单状态机与自动派单 · SLA 扫描告警 · 退款风控与审批 · HITL 断点恢复 · 人员权限体系 · 知识库管理 · 飞书出站通知与身份绑定 · 14 页管理后台 · 43 个测试用例
+RAG 混合召回与拒答 · 17 类意图识别 · 规则引擎 · 工单状态机与自动派单 · SLA 扫描告警 · 退款风控与审批 · HITL 断点恢复 · **转人工客服闭环（工单化接管 + AI 静默 + 坐席台）** · **客户线索与任务进度（六阶段漏斗 + 自动留痕 + AI 自动捕获）** · 人员权限体系 · 知识库管理 · 飞书出站通知与身份绑定 · 16 页管理后台 · 111 个测试用例
 
 ### 🚧 规划中 / 待完善
 
@@ -538,7 +560,7 @@ RAG 混合召回与拒答 · 16 类意图识别 · 规则引擎 · 工单状态�
 
 | 调用方 | 方式 | 保护范围 |
 |---|---|---|
-| 管理后台（浏览器） | JWT 会话 + 权限点 | `/tickets` `/refunds` `/customers` `/knowledge` `/sla` `/logs` `/admin` `/feishu` `/users` `/engineers` `/chat` `/cache` |
+| 管理后台（浏览器） | JWT 会话 + 权限点 | `/tickets` `/refunds` `/customers` `/leads` `/handoffs` `/knowledge` `/sla` `/logs` `/admin` `/feishu` `/users` `/engineers` `/chat` `/cache` |
 | OpenClaw 网关（服务端） | 共享 API Key（`X-API-Key` 或 `Authorization: Bearer`） | `/v1/*`、`/threads/*` |
 
 - 公开白名单仅 3 个：`POST /auth/login`、`GET /health`、`GET /`（仅返回应用名与文档入口）

@@ -20,6 +20,12 @@ class Customer(Base):
     total_refunds = Column(Integer, default=0)
     total_complaints = Column(Integer, default=0)
     total_tickets = Column(Integer, default=0)
+
+    # ★ 客户归属：谁负责这个客户；来源于哪条线索
+    owner_id = Column(Integer, index=True, nullable=True)
+    owner_name = Column(String(64), default="")
+    lead_id = Column(String(32), index=True, nullable=True)
+
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -38,5 +44,8 @@ class Customer(Base):
             "total_refunds": self.total_refunds,
             "total_complaints": self.total_complaints,
             "total_tickets": self.total_tickets,
+            "owner_id": self.owner_id,
+            "owner_name": self.owner_name or "",
+            "lead_id": self.lead_id,
             "created_at": _iso(self.created_at),
         }

@@ -115,6 +115,9 @@ class CustomerResponse(BaseModel):
     total_refunds: int
     total_complaints: int
     total_tickets: int
+    owner_id: Optional[int] = None
+    owner_name: str = ""
+    lead_id: Optional[str] = None
     created_at: Optional[str] = None
 
 
@@ -148,3 +151,53 @@ class RefundResponse(BaseModel):
     approver: Optional[str] = None
     approval_note: Optional[str] = None
     created_at: Optional[str] = None
+
+
+# ============ 客户线索 ============
+class LeadCreateRequest(BaseModel):
+    name: str
+    phone: str = ""
+    company: str = ""
+    source: str = "other"          # feishu/phone/referral/website/other
+    need_desc: str = ""
+    priority: str = "normal"       # high/normal/low
+    owner_id: Optional[int] = None  # 为空则自动分配
+    customer_id: Optional[str] = None
+
+
+class LeadUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    company: Optional[str] = None
+    source: Optional[str] = None
+    need_desc: Optional[str] = None
+    priority: Optional[str] = None
+    owner_id: Optional[int] = None
+    stage: Optional[str] = None    # new/contacted/quoted/negotiating/won/lost
+    quote_amount: Optional[int] = None
+    quoted: Optional[bool] = None
+    deal_amount: Optional[int] = None
+    lost_reason: Optional[str] = None
+    next_action: Optional[str] = None
+    next_follow_at: Optional[str] = None
+    customer_id: Optional[str] = None
+
+
+class LeadFollowupRequest(BaseModel):
+    content: str
+    channel: str = "other"         # feishu/phone/wechat/meeting/other
+
+
+# ============ 转人工 ============
+class HandoffCreateRequest(BaseModel):
+    thread_id: str
+    reason: str = ""
+    sender_open_id: str = ""
+
+
+class HandoffReplyRequest(BaseModel):
+    text: str
+
+
+class HandoffCloseRequest(BaseModel):
+    note: str = ""

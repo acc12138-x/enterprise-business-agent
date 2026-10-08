@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.deps import require_permission
-from app.api.routes import approvals, chat, tickets, knowledge, stream, openai_compat, admin, engineers, audit, customers, refunds, sla, users, auth, feishu
+from app.api.routes import approvals, chat, tickets, knowledge, stream, openai_compat, admin, engineers, audit, customers, refunds, sla, users, auth, feishu, leads, handoffs
 from app.api.schemas.models import HealthResponse
 import asyncio
 from contextlib import asynccontextmanager
@@ -38,6 +38,28 @@ async def sla_scanner():
         except Exception as e:
             print(f"[SLA] 扫描失败: {e}")
         await asyncio.sleep(300)  # 5 分钟
+
+
+# ============================================================
+# 转人工后台巡检（每 60 秒）
+# ------------------------------------------------------------
+# 处理「没人认领」的转人工工单：超时 → 标记 timeout + 升级通知主管 + 告知用户。
+# 注意：patrol_timeouts() 里有数据库查询和飞书 HTTP 调用，是同步函数，
+# 必须丢进线程池执行，否则会卡住 event loop（照 _warmup_rag 的做法）。
+# ============================================================
+async def handoff_patrol():
+    """后台循环：巡检超时未认领的转人工工单。"""
+    await asyncio.sleep(20)          # 启动后延迟 20 秒，避开启动高峰
+    interval = int(getattr(settings, "handoff_patrol_interval", 60) or 60)
+    while True:
+        try:
+            from app.services.handoff_service import patrol_timeouts
+            stats = await asyncio.get_running_loop().run_in_executor(None, patrol_timeouts)
+            if stats.get("timed_out"):
+                print(f"[HANDOFF] 巡检完成: {stats}")
+        except Exception as e:
+            print(f"[HANDOFF] 巡检失败: {e}")
+        await asyncio.sleep(max(15, interval))
 
 
 async def _warmup_rag():
@@ -107,6 +129,9 @@ async def lifespan(app):
     """启动时挂后台任务。"""
     task = asyncio.create_task(sla_scanner())
     print("[启动] SLA 定时扫描已启动（每 5 分钟）")
+    # 转人工超时巡检
+    patrol = asyncio.create_task(handoff_patrol())
+    print("[启动] 转人工超时巡检已启动")
     # 后台预热（不阻塞 FastAPI 启动）
     asyncio.create_task(_warmup_rag())
     print("[启动] RAG 预热任务已挂载")
@@ -119,6 +144,8 @@ async def lifespan(app):
     yield
     task.cancel()
     print("[关闭] SLA 定时扫描已停止")
+    patrol.cancel()
+    print("[关闭] 转人工超时巡检已停止")
 
 app = FastAPI(
     title=settings.app_name,
@@ -149,6 +176,8 @@ app.include_router(customers.router)
 app.include_router(refunds.router)
 app.include_router(sla.router)
 app.include_router(feishu.router)
+app.include_router(leads.router)
+app.include_router(handoffs.router)
 
 
 @app.get("/cache/stats")

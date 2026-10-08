@@ -124,8 +124,22 @@ async def stream_run(thread_id: str, request: Request,
     }
     config = {"configurable": {"thread_id": thread_id}}
 
+    # ---------- 转人工：坐席接管中则 AI 静默，不跑工作流 ----------
+    from app.services import handoff_service as _hs
+    muted = _hs.before_turn(thread_id, message)
+
     async def event_generator() -> AsyncGenerator[str, None]:
         yield sse("status", {"type": "status", "message": "开始处理"})
+
+        if muted:
+            _ans = _hs.mute_reply_text(muted)
+            _hs.record_message(thread_id, "assistant", _ans,
+                               handoff_id=muted["handoff_id"])
+            yield sse("terminal", {
+                "type": "terminal", "status": "waiting", "answer": _ans,
+                "confidence": 0.0, "citations": [], "intent": "human",
+            })
+            return
 
         try:
             async for chunk in graph.astream(init, config, stream_mode="updates"):
@@ -146,6 +160,8 @@ async def stream_run(thread_id: str, request: Request,
                 return
 
             answer = final_values.get("answer", "") or build_fallback_answer(final_values)
+            # 会话落库 + 必要时转人工（通知坐席）
+            _hs.after_turn(thread_id, message, answer, final_values)
             yield sse("terminal", {
                 "type": "terminal",
                 "status": final_values.get("flow_status", "succeeded"),

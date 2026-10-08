@@ -648,12 +648,32 @@ async def chat_completions(req: ChatCompletionRequest, request: Request,
         return StreamingResponse(cmd_stream(), media_type="text/event-stream")
 
     tid = _thread_id(session_key)
-    final = _try_resume(tid, user_msg)
-    if final is None:
-        final = _run_graph(user_msg, session_key, req.messages,
-                           sender_id=sender_id or "", extra_slots=extra_slots)
+
+    # ---------- 转人工：坐席接管中则 AI 静默，不跑工作流 ----------
+    # 放在最前面是有意的：接管期间既不该浪费 LLM 调用，也不该搅乱 checkpoint。
+    from app.services import handoff_service as _hs
+
+    muted = _hs.before_turn(tid, user_msg, sender_open_id=sender_id or "")
+    if muted:
+        final = {
+            "answer": _hs.mute_reply_text(muted),
+            "intent": "human",
+            "flow_status": "waiting",
+        }
+    else:
+        final = _try_resume(tid, user_msg)
+        if final is None:
+            final = _run_graph(user_msg, session_key, req.messages,
+                               sender_id=sender_id or "", extra_slots=extra_slots)
 
     answer = _build_answer(final)
+
+    # ---------- 会话落库 + 必要时转人工（通知坐席）----------
+    if muted:
+        _hs.record_message(tid, "assistant", answer, handoff_id=muted["handoff_id"])
+    else:
+        _hs.after_turn(tid, user_msg, answer, final, sender_open_id=sender_id or "")
+
     created = int(time.time())
     resp_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 

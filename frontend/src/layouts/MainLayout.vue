@@ -101,9 +101,10 @@ const user = ref(null);
  *
  * 1. 工作台      —— 概览与自测
  * 2. 售后业务    —— 工单 / 客户 / 退款 / 时效 / 审批，都是日常售后处理
- * 3. 知识库      —— 知识资产的维护
- * 4. 组织与人员  —— 人、角色、权限
- * 5. 系统管理    —— 集成配置、日志、通知、全局设置
+ * 3. 销售与客服  —— 线索漏斗、转人工接管，面向售前与人工服务
+ * 4. 知识库      —— 知识资产的维护
+ * 5. 组织与人员  —— 人、角色、权限
+ * 6. 系统管理    —— 集成配置、日志、通知、全局设置
  */
 const MENU_GROUPS = [
   {
@@ -121,6 +122,13 @@ const MENU_GROUPS = [
       { path: "/refunds",   label: "退款管理", icon: "Money",       perm: "refund.view" },
       { path: "/sla",       label: "SLA 时效", icon: "AlarmClock" },
       { path: "/approvals", label: "审批台",   icon: "CircleCheck", perm: "refund.approve" },
+    ],
+  },
+  {
+    key: "sales", label: "销售与客服", icon: "TrendCharts",
+    items: [
+      { path: "/leads",    label: "线索管理",   icon: "TrendCharts", perm: "lead.view" },
+      { path: "/handoffs", label: "人工客服台", icon: "Service",     perm: "handoff.view" },
     ],
   },
   {

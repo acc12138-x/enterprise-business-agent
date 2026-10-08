@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # HITL 超时（秒）
     hitl_timeout_seconds: int = 1800
 
+    # 转人工：多久没人认领就算超时（秒），会被标记 timeout 并升级通知主管
+    handoff_timeout_seconds: int = 300
+    # 转人工后台巡检间隔（秒）
+    handoff_patrol_interval: int = 60
+    # AI 自动捕获线索：命中「线索意图」时是否自动建线索
+    lead_auto_capture: bool = True
+
     # 缓存后端：sqlite / redis
     cache_backend: str = "sqlite"
     redis_url: str = "redis://127.0.0.1:6379/0"

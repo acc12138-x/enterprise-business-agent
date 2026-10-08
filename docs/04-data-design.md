@@ -24,6 +24,14 @@ refunds ──N:1──> tickets ──N:1──> users
 | audit_logs | 操作审计 | 百万级 |
 | notifications | 消息通知 | 百万级 |
 | approval_flows | 审批流配置 | 十级 |
+| pending_bindings | 待绑定飞书账号 | 十级 |
+| **leads** | **客户线索 + 阶段 + 报价 + 成交** | **万级** |
+| **lead_followups** | **线索跟进记录（进度时间线）** | **十万级** |
+| **human_handoffs** | **转人工工单（接管队列）** | **万级** |
+| **conversation_messages** | **会话消息（含人工接管期间）** | **百万级** |
+
+> 后四张表是「转人工客服 + 客户线索」功能引入的，详见
+> [13-lead-handoff.md](13-lead-handoff.md)。
 
 ## 3. 核心表字段
 
@@ -146,6 +154,66 @@ score ≥ 70 → high_risk；≥ 40 → suspicious。
 **audit_logs**：id, actor, action, target_type, target_id, detail(JSON), result(ok/fail), created_at
 
 **notifications**：id, channel(feishu/sms/email), target, event, title, content, status(sent/failed/pending), created_at
+
+### 3.6 leads（客户线索）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| lead_id | VARCHAR(32) PK | `LD-YYYYMMDD-0001` |
+| customer_id | VARCHAR(32) | 关联客户（可空 —— 线索可先于建档存在） |
+| name / phone / company | VARCHAR | 联系人信息（冗余，便于未建档线索独立存在） |
+| source | VARCHAR(32) | feishu/phone/referral/website/other |
+| need_desc | TEXT | 需求描述 |
+| **owner_id / owner_name** | INT / VARCHAR | **谁负责** |
+| **stage** | VARCHAR(16) | **new/contacted/quoted/negotiating/won/lost** |
+| priority | VARCHAR(16) | high/normal/low |
+| **quoted / quote_amount / quote_at** | BOOL / INT / DATETIME | **报没报价** |
+| **won / deal_amount / won_at / lost_at / lost_reason** | | **成没成交** |
+| next_action / next_follow_at | VARCHAR / DATETIME | 下一步计划 |
+| source_thread_id / source_msg | VARCHAR / TEXT | 溯源到原始会话 |
+
+### 3.7 lead_followups（跟进记录）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK | 自增 |
+| lead_id | VARCHAR(32) | 关联线索 |
+| user_id / user_name | INT / VARCHAR | 谁跟进的 |
+| channel | VARCHAR(32) | feishu/phone/wechat/meeting/other |
+| content | TEXT | 跟进内容 |
+| stage_from / stage_to | VARCHAR(16) | 阶段变化（**自动留痕**） |
+| quote_change | VARCHAR(64) | 报价变化（**自动留痕**） |
+| created_at | DATETIME | |
+
+### 3.8 human_handoffs（转人工工单）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| handoff_id | VARCHAR(32) PK | `HT-YYYYMMDD-0001` |
+| thread_id | VARCHAR(128) | 会话 id（关联 LangGraph checkpoint） |
+| sender_open_id | VARCHAR(128) | 用户 |
+| customer_id / lead_id | VARCHAR(32) | 关联客户 / 线索 |
+| trigger | VARCHAR(32) | human_intent/complaint/rule_need_human |
+| reason / summary / last_user_msg | VARCHAR / TEXT | 给坐席看的上下文 |
+| status | VARCHAR(16) | queued/claimed/closed/timeout |
+| claimed_by / claimed_by_name / claimed_at | | 谁接的、什么时候 |
+| closed_at / close_note | | 结单 |
+| notify_result | TEXT | 通知结果 JSON（排查用） |
+
+### 3.9 conversation_messages（会话消息）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | INT PK | 自增 |
+| thread_id | VARCHAR(128) | 会话 id |
+| role | VARCHAR(16) | user/assistant/human_agent/system |
+| content | TEXT | 消息正文 |
+| sender_open_id / sender_name | VARCHAR | 发送者 |
+| handoff_id | VARCHAR(32) | 属于哪次转人工 |
+| intent | VARCHAR(32) | 命中的意图（用于常见问题分析） |
+
+> **写入策略**：一行一条，**绝不逐 token 写**（否则 IO 会爆）。
+> 用户消息在轮次开始落库，AI 回复在**流结束后**落一次。
 
 ## 4. 索引建议
 

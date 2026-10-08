@@ -8,8 +8,11 @@ from app.db.models.order import Order
 from app.db.models.refund import RefundRequest
 from app.db.models.approval import ApprovalFlow
 from app.db.models.pending_binding import PendingBinding
+from app.db.models.lead import Lead, LeadFollowup
+from app.db.models.handoff import HumanHandoff, ConversationMessage
 
 __all__ = [
     "Ticket", "Engineer", "User", "AuditLog", "Notification",
     "Customer", "Order", "RefundRequest", "ApprovalFlow", "PendingBinding",
+    "Lead", "LeadFollowup", "HumanHandoff", "ConversationMessage",
 ]

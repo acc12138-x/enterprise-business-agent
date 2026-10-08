@@ -72,3 +72,6 @@ docs/08-interview.md
 # 需要额外执行 git rm --cached docs/07-resume.md
 /agent.docx
 /agent.doc
+
+# ===== Office 临时/锁文件（Word 打开文档时会生成 ~$xxx）=====
+~$*

@@ -6,6 +6,29 @@ const http = axios.create({
   timeout: 120000,
 });
 
+// ============================================================
+// 全站错误提示（带去重）
+// ------------------------------------------------------------
+// 背景：响应拦截器已经统一提示过一次错误，而页面里的 catch 出于习惯
+// 往往还会再提示一次，用户会看到**两条一模一样**的红条。
+// 这里按「文案 + 短时间窗」去重：拦截器与页面都走 toastError，
+// 同一条错误在 1.2 秒内只会弹一次。
+// ============================================================
+let _lastToastText = "";
+let _lastToastAt = 0;
+
+export function toastError(msg, windowMs = 1200) {
+  const text = typeof msg === "string" ? msg : JSON.stringify(msg ?? "请求失败");
+  const now = Date.now();
+  if (text === _lastToastText && now - _lastToastAt < windowMs) {
+    _lastToastAt = now;
+    return;
+  }
+  _lastToastText = text;
+  _lastToastAt = now;
+  ElMessage.error(text);
+}
+
 http.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem("auth_token");
@@ -26,11 +49,11 @@ http.interceptors.response.use(
       localStorage.removeItem("auth_token");
       localStorage.removeItem("auth_user");
       window.location.href = "/login";
-      ElMessage.error("登录已过期，请重新登录");
+      toastError("登录已过期，请重新登录");
       return Promise.reject(err);
     }
     const msg = (err.response && err.response.data && err.response.data.detail) || err.message || "请求失败";
-    ElMessage.error(typeof msg === "string" ? msg : JSON.stringify(msg));
+    toastError(msg);
     return Promise.reject(err);
   }
 );

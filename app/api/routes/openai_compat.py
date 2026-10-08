@@ -1,5 +1,6 @@
 """OpenAI 兼容层：OpenClaw 把 LangGraph 当自定义 LLM Provider 用。"""
 from __future__ import annotations
+import hashlib
 import json
 import re
 import time
@@ -18,6 +19,7 @@ from app.services.permission import check_feishu_command
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
 _session_map: Dict[str, str] = {}
+_tid_owner: Dict[str, str] = {}     # thread_id -> session_key，用于发现截断碰撞
 
 
 def _strip_openclaw_wrapper(text: str) -> str:
@@ -61,12 +63,51 @@ def _extract_sender_id(text: str) -> Optional[str]:
     return None
 
 
-def _thread_id(session_key: str | None) -> str:
-    if not session_key:
-        return f"openclaw-{uuid.uuid4().hex[:8]}"
-    if session_key not in _session_map:
-        _session_map[session_key] = f"openclaw-{session_key[:20]}"
-    return _session_map[session_key]
+def _thread_id(session_key: str | None, sender_id: str = "") -> str:
+    """由会话标识推出**稳定**的 thread_id。
+
+    三条规则都是线上踩出来的：
+
+    1. **没有 session_key 时绝不能随机。**
+       原来这里直接 `return f"openclaw-{uuid.uuid4().hex[:8]}"`，
+       于是每次请求都变成一个全新会话 —— 多轮上下文与 HITL 断点全部丢失。
+       线上真实故障：用户在飞书回「同意」确认转人工，该请求没带 session_key，
+       被当成全新问题重跑了一遍 AI（intent 落到 qa → RAG），
+       最终回复「知识库中没有找到相关内容」。
+       现在退化为按**发送者**聚合，同一个人的连续消息仍落在同一会话里。
+
+    2. **截断要防碰撞。**
+       原来直接取 `session_key[:20]`，而 session_key 的常见形式是
+       `agent:main:feishu:group:<chat_id>`，前 20 字符全是固定前缀，
+       所有群聊会共用一个线程（跨会话串台）。
+       现在保留原有截断规则（不影响既有会话的 id），
+       但一旦发现该 tid 已被别的 session_key 占用，就改用哈希区分。
+
+    3. 实在没有任何标识时才用随机值，并打日志，便于日后排查。
+    """
+    key = (session_key or "").strip()
+    if not key:
+        s = (sender_id or "").strip()
+        if s:
+            key = f"sender:{s}"
+        else:
+            tid = f"openclaw-{uuid.uuid4().hex[:8]}"
+            print(f"[THREAD] ⚠️ 既无 session_key 也无 sender_id，退化为随机线程 "
+                  f"{tid} —— 这轮的多轮上下文会丢，请检查网关是否漏传会话标识")
+            return tid
+
+    cached = _session_map.get(key)
+    if cached:
+        return cached
+
+    tid = f"openclaw-{key[:20]}"
+    owner = _tid_owner.get(tid)
+    if owner is not None and owner != key:
+        tid = "openclaw-" + hashlib.md5(key.encode("utf-8")).hexdigest()[:16]
+        print(f"[THREAD] 会话标识截断后碰撞，改用哈希：{key[:40]} -> {tid}")
+    _session_map[key] = tid
+    _tid_owner[tid] = key
+    return tid
 
 
 def _extract_raw_user_message(messages: List[Dict[str, Any]]) -> str:
@@ -104,7 +145,7 @@ def _run_graph(user_msg, session_key, messages=None, sender_id="", extra_slots=N
     这里只用 user_input 字段传当前消息，state.messages 交由
     state.py 的 reducer 截断到最近 N 条。
     """
-    tid = _thread_id(session_key)
+    tid = _thread_id(session_key, sender_id)
     slots = dict(extra_slots or {})
     init = {
         "thread_id": tid,
@@ -685,7 +726,7 @@ async def chat_completions(req: ChatCompletionRequest, request: Request,
             yield "data: [DONE]\n\n"
         return StreamingResponse(cmd_stream(), media_type="text/event-stream")
 
-    tid = _thread_id(session_key)
+    tid = _thread_id(session_key, sender_id or "")
 
     # ---------- 转人工：坐席接管中则 AI 静默，不跑工作流 ----------
     # 放在最前面是有意的：接管期间既不该浪费 LLM 调用，也不该搅乱 checkpoint。

@@ -75,6 +75,16 @@ class Settings(BaseSettings):
     # 开启后网关必须在 Provider 里配好与 OPENCLAW_API_KEY 一致的 Key，
     # 否则入站链路会收到 401。网关侧暂未配置时可临时设为 false。
     openclaw_require_key: bool = True
+    # 飞书自建应用凭据（出站私聊 / 群广播 / open_id 反查都要用）
+    #
+    # ⚠️ 这两个字段以前【只定义了 openclaw_ 前缀的版本】，而
+    # app/integrations/feishu_client.py 优先读的是不带前缀的
+    # feishu_app_id / feishu_app_secret。因为 Settings 配了 extra="ignore"，
+    # 只写 FEISHU_APP_ID 环境变量会被静默忽略 —— 表现为所有飞书出站消息
+    # 都失败并报「App ID/Secret 未配置或获取 token 失败」，且没有任何报错提示。
+    # 现在两个名字都支持：FEISHU_APP_ID 优先，OPENCLAW_FEISHU_APP_ID 作兼容回退。
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
     openclaw_feishu_app_id: str = ""
     openclaw_feishu_app_secret: str = ""
 

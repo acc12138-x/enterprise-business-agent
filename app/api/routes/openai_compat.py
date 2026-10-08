@@ -140,18 +140,56 @@ def _build_answer(final):
 
 
 _APPROVE = ["同意", "确认", "批准", "通过", "可以", "好的", "approve", "yes", "ok"]
-_REJECT = ["拒绝", "驳回", "不同意", "不行", "取消", "否", "reject", "no"]
+_REJECT = ["拒绝", "驳回", "不同意", "不可以", "不行", "取消", "否", "reject", "no"]
+
+
+def _strip_quote_prefix(s: str) -> str:
+    """去掉飞书「引用回复」带来的前缀。
+
+    用户在飞书里长按消息选「回复」时，网关有可能把内容传成
+    「回复 某某: 同意」而不是干净的「同意」。这时按前缀匹配就会失败，
+    表现为「回复了同意，却被当成新问题重跑了一遍 AI」。
+    这里在前 24 个字符内找第一个冒号，若冒号前是「回复/引用」就截掉。
+    """
+    t = (s or "").strip()
+    for sep in (": ", "：", ":"):
+        idx = t.find(sep)
+        if 0 <= idx <= 24 and t[:idx].lstrip().startswith(("回复", "引用")):
+            return t[idx + len(sep):].strip()
+    return t
 
 
 def _parse_decision(text):
-    t = (text or "").strip().lower()
-    if not t:
+    raw = (text or "").strip()
+    if not raw:
         return None
-    for w in _REJECT:
-        if t == w.lower() or t.startswith(w.lower()):
+
+    # 先按原样，再去掉引用前缀，两者取先命中的——顺序上先试剥离后的更准
+    candidates = []
+    stripped = _strip_quote_prefix(raw)
+    if stripped and stripped != raw:
+        candidates.append(stripped)
+    candidates.append(raw)
+
+    def _hit(t: str, words) -> bool:
+        tl = t.lower()
+        for w in words:
+            wl = w.lower()
+            if not wl:
+                continue
+            if tl == wl or tl.startswith(wl):
+                return True
+            # 短消息（≤12 字）允许「包含」匹配，容忍「好的，同意」这类说法；
+            # 单字词（如「否」）不参与包含匹配，否则极易误判。
+            if len(wl) >= 2 and len(tl) <= 12 and wl in tl:
+                return True
+        return False
+
+    for c in candidates:
+        if _hit(c, _REJECT):
             return "block_revise: 用户拒绝"
-    for w in _APPROVE:
-        if t == w.lower() or t.startswith(w.lower()):
+    for c in candidates:
+        if _hit(c, _APPROVE):
             return "approve"
     return None
 

@@ -111,6 +111,12 @@ def build_graph():
             "refund_apply": "refund_apply",
             "my_tickets_node": "my_tickets_node",
             "chitchat_node": "chitchat_node",
+            # ⚠️ route_after_slot 返回的每个值都必须在这里登记，
+            # 漏一个就会在命中该意图时直接抛错。
+            # 真实故障：lead 意图漏登记 lead_capture_node，
+            # 用户发「我们公司想谈合作」时后端 500，
+            # 飞书里显示网关的「Something went wrong」。
+            "lead_capture_node": "lead_capture_node",
             "engineer_query": "engineer_query",
             "rag_search": "rag_search",
             "end": END,

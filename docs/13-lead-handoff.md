@@ -362,3 +362,139 @@ docker compose -f docker-compose.prod.yml up -d --build
 - 转人工：建单幂等、认领、**他人无法重复认领**、未认领不能回复、
   回复落库为 `human_agent`、结束插入系统提示、状态筛选、404
 - **AI 静默**：`queued` 不静默 / `claimed` 静默 / `closed` 恢复
+- **静默回话模式**：`never` / `first` / `always` / 未知值回退，
+  以及回归守卫「任何模式下都**不能返回空串**」
+- **闲置接管兜底**：闲置的被自动结束且 AI 恢复；**活跃中的不能被误关**
+
+另有三个测试文件是这轮线上故障换来的：
+
+| 文件 | 守什么 |
+|---|---|
+| `tests/test_graph_routing.py` | 路由函数返回的每个值都必须在条件边映射表里登记；对不依赖 LLM 的意图**真的 invoke 一次图** |
+| `tests/test_thread_id.py` | 同一会话标识稳定映射；缺 `session_key` 时按发送者聚合（**绝不能随机**）；截断碰撞必须被识别 |
+| `tests/test_hitl_decision.py` | 「同意/拒绝」的各种写法，含飞书**引用回复前缀**；普通提问不能被误判成决策 |
+
+---
+
+## 七、这一段踩过的坑（第二轮，全部来自真实环境）
+
+第一轮（功能开发期）的坑见下方「五、排查」表。下面是**部署上线后**暴露出来的，
+每一条都对应一次线上现象 —— 也正因为它们是真实环境才暴露的，
+本地自测（结构性检查）发现不了。
+
+### 7.1 新增意图后漏登记条件边映射表
+
+**现象**：飞书里发「我们公司想谈长期合作，手机 138xxx」，
+只显示网关那句 `⚠️ Something went wrong while processing your request.`；
+而同一时间闲聊、报修、退款全部正常。
+
+**根因**：给 lead 意图加了节点 `g.add_node("lead_capture_node", ...)`、
+加了边 `g.add_edge("lead_capture_node", END)`、也改了
+`route_after_slot` 的返回值，**唯独忘了把它登记进
+`slot_filling` 的条件边 `path_map`**。LangGraph 在命中该路由时直接抛
+`KeyError: 'lead_capture_node'` → 后端 500。
+
+**为什么只有 lead 失败**：只有它走这条新路由。
+
+**修复**：补进 `path_map`，并写清注释「`route_*` 返回的每个值都必须登记」。
+
+**教训（最重要的一条）**：
+> 当时的冒烟测试只断言了「节点存在于 `g.nodes`」——
+> **"节点在不在图里"和"命中时能不能正确路由"是两件事**。
+> 现在 `tests/test_graph_routing.py` 用两道防线守住：
+> 静态扫 `graph.py` 校验路由表完整性 + 对 LLM-free 意图真的跑一遍图。
+
+顺带修了测试自身的缺陷：会话 id 写死导致**不可重复运行**（上一轮的线索
+会污染下一轮），改成每次 `uuid`。
+
+### 7.2 会话线程号不稳定，HITL 断点恢复失效
+
+**现象**：用户回「同意」确认转人工，收到的是
+「抱歉，知识库中没有找到与您问题相关的内容」。
+
+**排查**：日志显示同一段对话出现三个不同线程号 ——
+`openclaw-oc_b9674...`、`openclaw-7a88f2c7`、`openclaw-ce973909`。
+后两个 8 位 hex 正是 `uuid4().hex[:8]`。
+
+**根因（两处）**：
+
+```python
+if not session_key:
+    return f"openclaw-{uuid.uuid4().hex[:8]}"        # ① 随机 → 每次都是新会话
+_session_map[key] = f"openclaw-{key[:20]}"           # ② 截断 → 可能碰撞
+```
+
+网关有时不传 `session_key`（实测**每次都不传**），于是那一轮被当成全新会话：
+检测不到挂起的中断 → 重跑 AI → intent 落到 `qa` → 走 RAG → 无结果。
+
+②的碰撞实测：`agent:main:feishu:group:oc_AAAA` 与 `...oc_BBBB`
+**都映射到 `openclaw-agent:main:feishu:gr`**（前 20 字符全是固定前缀）。
+
+**修复**：缺 `session_key` 时退化为按 **`sender:<open_id>`** 聚合；
+保留原截断规则（不影响既有会话 id）但加反查表，发现碰撞就改用 md5 区分；
+两条退化路径都打日志。
+
+### 7.3 用空字符串表示「不回复」，被网关判定为生成失败
+
+**现象**：接管期间用户每发一条都收到
+`⚠️ Agent couldn't generate a response. Please try again.`
+
+**根因**：以为「返回空串」＝「不说话」。实际上网关把**非空的 completion**
+当成一次成功生成，`content=""` 会被判定为失败。
+
+**而且这个坑会持续复现**：坐席认领后如果没人点「结束接管」，
+该会话一直是 `claimed`，之后每条消息都进静默分支、每次都失败。
+
+**修复**：静默统一返回 `SILENT = "\u200b"`（零宽空格，非空所以网关收下，
+不可打印所以用户看不见），并加回归守卫断言「任何模式下都不能返回空串」。
+
+### 7.4 坐席忘了点「结束接管」→ 会话被永久静音
+
+**现象**：同上。坐席认领过、没结束，AI 再也不会回话。
+
+**修复**：`patrol_timeouts()` 增加兜底 —— `claimed` 且
+`HANDOFF_CLAIM_TTL_HOURS`（默认 4 小时）内**没有任何新消息**就自动结束并转回 AI。
+
+> ⚠️ 判定依据是**该会话最后一条消息的时间**，不是 `human_handoffs.updated_at`：
+> 坐席回复只写 `conversation_messages`，不碰 `human_handoffs`，
+> 用 `updated_at` 会把**正在服务中**的会话误判成闲置。
+
+### 7.5 飞书凭据的字段名对不上，且被静默忽略
+
+**现象**：所有出站消息失败并报「App ID/Secret 未配置或获取 token 失败」，
+但 `.env.production` 里明明写了 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，
+启动和运行期**都没有任何报错**。
+
+**根因**：`feishu_client` 优先读 `settings.feishu_app_id`，
+但 `Settings` 里**只定义了 `openclaw_feishu_app_id`**；
+又因为配了 `extra="ignore"`，写 `FEISHU_APP_ID` 会被 pydantic-settings
+**静默忽略** —— 报错只说"未配置"，完全指不到原因。
+
+**修复**：补上 `feishu_app_id` / `feishu_app_secret` 两个字段，两个名字都支持。
+
+> ⚠️ 别被误导：这个故障**只影响出站**（通知发不出去），入站照常收得到 ——
+> 现象上很像"后端坏了"，实际是发信环节没配好。
+> 诊断用 `python scripts/feishu_doctor.py`。
+
+### 7.6 总结：结构性检查 ≠ 行为验证
+
+这轮所有 bug 都有同一个特征：**我改完只做了结构性检查**
+（字段对不对、节点在不在、函数能不能 import），
+**没有做行为验证**（真的跑一遍、真的发一条消息）。
+
+对应的补救就是上面那三个新测试文件 —— 它们不检查"东西在不在"，
+而是**真的调用一次**：真的 invoke 图、真的解析一次决策、真的走一遍线程映射。
+
+---
+
+## 八、这一段新增的配置项
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 空 | 飞书自建应用凭据，**出站消息必需** |
+| `HANDOFF_TIMEOUT_SECONDS` | `300` | 没人认领多久算超时（秒）|
+| `HANDOFF_PATROL_INTERVAL` | `60` | 超时巡检间隔（秒）|
+| `HANDOFF_CLAIM_TTL_HOURS` | `4` | 认领后无新消息多久自动结束接管（小时）|
+| `HANDOFF_MUTED_MODE` | `never` | 接管期间回话策略：`never` / `first` / `always` |
+| `LEAD_AUTO_CAPTURE` | `true` | 是否开启 AI 自动捕获线索 |
+| `FEISHU_WEBHOOK_CS_GROUP` | 空 | 客服群 webhook（`handoff_created` / `handoff_timeout` 的群广播）|

@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     #   first  本次接管只回一次，之后安静
     #   always 每条都回（旧行为，仅调试用）
     handoff_muted_mode: str = "never"
+    # 坐席认领后多久没有任何新消息，就自动结束接管（小时）。
+    # 兜底用途：坐席点过认领却忘了点结束，会让该会话被永久静音 ——
+    # 用户之后发的每条消息都进静默分支，AI 再也不会回话。
+    handoff_claim_ttl_hours: float = 4
     # AI 自动捕获线索：命中「线索意图」时是否自动建线索
     lead_auto_capture: bool = True
 

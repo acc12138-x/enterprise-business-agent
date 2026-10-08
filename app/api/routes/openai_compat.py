@@ -734,13 +734,15 @@ async def chat_completions(req: ChatCompletionRequest, request: Request,
 
     muted = _hs.before_turn(tid, user_msg, sender_open_id=sender_id or "")
     if muted:
-        # 静默期间默认【不回话】（HANDOFF_MUTED_MODE，默认 never）：
+        # 静默期间默认只回一个零宽空格（HANDOFF_MUTED_MODE，默认 never）：
         # 坐席认领时已经私聊告知过用户「客服已接入」，之后用户每来一条
         # 都回「正在为您服务」只是噪音 —— 用户在等的是坐席的答复。
-        # 注意这里【不能】走 _build_answer：它会把空答案兜底成
+        # ⚠️ 但【不能】返回空字符串：网关把空 content 判定为生成失败，会给
+        # 用户回「Agent couldn't generate a response」。见 handoff_service.SILENT。
+        # 也【不能】走 _build_answer：它会把空答案兜底成
         # 「已转人工，客服稍后接入。」，那就又变成复读了。
         answer = _hs.muted_reply(muted)
-        if answer:
+        if answer != _hs.SILENT:
             _hs.record_message(tid, "assistant", answer, handoff_id=muted["handoff_id"])
     else:
         final = _try_resume(tid, user_msg)

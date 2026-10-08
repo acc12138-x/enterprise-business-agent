@@ -237,7 +237,12 @@ class TestMutedReplyMode:
 
     真实反馈：用户被接管后每发一条都收到同一句「人工客服正在为您服务」，
     体验很差 —— 坐席认领时已经私聊告知过用户了，之后纯属噪音。
-    默认改成 never（完全不回），用户在等的是坐席的答复。
+    默认改成 never，用户在等的是坐席的答复。
+
+    ★ 关键约束：静默时**绝不能返回空字符串**。
+      网关把空 content 判定为生成失败，会给用户回
+      「⚠️ Agent couldn't generate a response. Please try again.」，
+      比复读还糟。所以静默统一返回零宽空格 SILENT。
     """
 
     @staticmethod
@@ -249,29 +254,52 @@ class TestMutedReplyMode:
     def test_never_keeps_silent(self, monkeypatch):
         from app.services import handoff_service as hs
         self._set_mode(monkeypatch, "never")
-        assert hs.muted_reply({"claimed_by_name": "小周"}) == ""
-        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == ""
+        assert hs.muted_reply({"claimed_by_name": "小周"}) == hs.SILENT
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == hs.SILENT
 
     def test_first_replies_only_once(self, monkeypatch):
         from app.services import handoff_service as hs
         self._set_mode(monkeypatch, "first")
-        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": False}) != ""
-        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == ""
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": False}) != hs.SILENT
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) == hs.SILENT
 
     def test_always_is_legacy_behaviour(self, monkeypatch):
         from app.services import handoff_service as hs
         self._set_mode(monkeypatch, "always")
-        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) != ""
+        assert hs.muted_reply({"claimed_by_name": "小周", "_notified": True}) != hs.SILENT
 
     def test_empty_handoff_is_silent(self, monkeypatch):
         from app.services import handoff_service as hs
         self._set_mode(monkeypatch, "always")
-        assert hs.muted_reply(None) == ""
+        assert hs.muted_reply(None) == hs.SILENT
 
     def test_unknown_mode_falls_back_to_silent(self, monkeypatch):
         from app.services import handoff_service as hs
         self._set_mode(monkeypatch, "随便写的")
-        assert hs.muted_reply({"claimed_by_name": "小周"}) == ""
+        assert hs.muted_reply({"claimed_by_name": "小周"}) == hs.SILENT
+
+    @pytest.mark.parametrize("mode", ["never", "first", "always", "随便写的"])
+    def test_never_returns_empty_string(self, monkeypatch, mode):
+        """★ 回归守卫：任何模式下都不能返回空串，否则网关会报生成失败。"""
+        from app.services import handoff_service as hs
+        self._set_mode(monkeypatch, mode)
+        for notified in (False, True):
+            out = hs.muted_reply({"claimed_by_name": "小周", "_notified": notified})
+            assert out != "", f"mode={mode} notified={notified} 返回了空串"
+            assert isinstance(out, str) and len(out) > 0
+        assert hs.muted_reply(None) != ""
+
+    def test_silent_is_invisible(self):
+        """SILENT 必须是「非空但看不见」的零宽字符。
+
+        注意别用 .strip() 判断 —— Python 并不把 U+200B 当空白，
+        '\\u200b'.strip() 返回的还是它自己。
+        """
+        from app.services import handoff_service as hs
+        assert hs.SILENT == "\u200b"
+        assert len(hs.SILENT) == 1
+        assert not hs.SILENT.isprintable()   # 不可打印 → 用户看不见
+        assert hs.SILENT != ""               # 但非空 → 网关不会判定生成失败
 
     def test_before_turn_injects_notified_flag(self, monkeypatch):
         """before_turn 必须带上 _notified，否则 first 模式永远只回一次就哑了。"""
@@ -283,3 +311,50 @@ class TestMutedReplyMode:
         got = hs.before_turn(tid, "第一条")
         assert got is not None and "_notified" in got
         hs.close(h["handoff_id"], {"id": 999778, "name": "pytest 坐席"})
+
+
+class TestStaleClaimPatrol:
+    """坐席认领后忘了点结束 → 会话被永久静音。
+
+    兜底：接管长时间没有任何新消息就自动结束并转回 AI。
+    """
+
+    def test_stale_claim_is_auto_closed(self):
+        from datetime import datetime, timedelta
+
+        from app.db.models.handoff import HumanHandoff
+        from app.db.session import session_scope
+        from app.services import handoff_service as hs
+
+        tid = "pytest-stale-claim-thread"
+        h = hs.create_handoff(tid, sender_open_id="", reason="闲置接管测试")
+        hid = h["handoff_id"]
+        hs.claim(hid, {"id": 999779, "name": "pytest 坐席"})
+        assert hs.is_ai_muted(tid) is True
+
+        # 把这个会话的所有消息时间往前拨 100 小时，模拟「很久没动静」
+        with session_scope() as s:
+            from app.db.models.handoff import ConversationMessage
+            from sqlalchemy import select as _select
+            for m in s.execute(_select(ConversationMessage).where(
+                    ConversationMessage.thread_id == tid)).scalars().all():
+                m.created_at = datetime.now() - timedelta(hours=100)
+
+        res = hs.patrol_timeouts()
+        assert res.get("stale_closed", 0) >= 1, res
+        # 自动结束后 AI 必须恢复
+        assert hs.is_ai_muted(tid) is False
+
+    def test_active_claim_is_kept(self):
+        """刚有消息往来的接管不能被误关。"""
+        from app.services import handoff_service as hs
+
+        tid = "pytest-active-claim-thread"
+        h = hs.create_handoff(tid, sender_open_id="", reason="活跃接管测试")
+        hid = h["handoff_id"]
+        hs.claim(hid, {"id": 999780, "name": "pytest 坐席"})
+        hs.record_message(tid, "user", "我刚发了一条", handoff_id=hid)
+
+        hs.patrol_timeouts()
+        assert hs.is_ai_muted(tid) is True, "活跃中的接管被误关了"
+        hs.close(hid, {"id": 999780, "name": "pytest 坐席"})

@@ -344,12 +344,17 @@ def close(handoff_id: str, user: Dict, note: str = "") -> Dict:
 # 超时巡检（供后台线程调用）
 # ============================================================
 def patrol_timeouts() -> Dict:
-    """处理超时未认领的转人工工单。
+    """后台巡检：处理超时与「被遗忘的接管」。
 
-    queued 超过 handoff_timeout_seconds（默认 300 秒）：
-      · 标记 timeout
-      · 升级通知主管（飞书）
-      · 告知用户「暂无人接入，已记录并会尽快联系」
+    1. queued 超过 handoff_timeout_seconds（默认 300 秒）无人认领：
+         · 标记 timeout
+         · 升级通知主管（飞书）
+         · 告知用户「暂无人接入，已记录并会尽快联系」
+
+    2. claimed 超过 handoff_claim_ttl_hours（默认 4 小时）**没有任何新消息**：
+         · 自动结束接管并告知用户「已转回智能助手」
+       兜底的原因：坐席点过认领却忘了点结束，会让这个会话被**永久静音** ——
+       用户之后发的每条消息都进静默分支，AI 再也不会回话。
     """
     s = get_settings()
     timeout_sec = int(getattr(s, "handoff_timeout_seconds", 300) or 300)
@@ -368,8 +373,43 @@ def patrol_timeouts() -> Dict:
             r.closed_at = datetime.now()
             r.close_note = f"超过 {timeout_sec} 秒无人认领，自动标记超时"
 
+    # ---------- 兜底：被遗忘的接管 ----------
+    ttl_hours = float(getattr(s, "handoff_claim_ttl_hours", 4) or 4)
+    stale_deadline = datetime.now() - timedelta(hours=ttl_hours)
+    stale_targets = []
+    with session_scope() as sess:
+        claimed = sess.execute(
+            select(HumanHandoff).where(HumanHandoff.status == "claimed")
+        ).scalars().all()
+        for r in claimed:
+            # ⚠️ 以「该会话最后一条消息」为准，而不是 human_handoffs.updated_at：
+            # 坐席回复只写 conversation_messages，不会碰 human_handoffs，
+            # 用 updated_at 会把正在服务中的会话误判成闲置。
+            last = sess.execute(
+                select(func.max(ConversationMessage.created_at))
+                .where(ConversationMessage.thread_id == r.thread_id)
+            ).scalar()
+            if last and last > stale_deadline:
+                continue
+            stale_targets.append(r.to_dict())
+            r.status = "closed"
+            r.closed_at = datetime.now()
+            r.close_note = f"超过 {ttl_hours} 小时无活动，自动结束接管"
+
+    for t in stale_targets:
+        oid = t.get("sender_open_id") or ""
+        if oid:
+            try:
+                send_private(oid, "本次人工服务已超时结束，已转回智能助手。")
+            except Exception:
+                pass
+        record_message(t["thread_id"], ROLE_SYSTEM,
+                       "人工服务长时间无活动，已自动结束并转回智能助手。",
+                       handoff_id=t["handoff_id"])
+        print(f"[HANDOFF] 接管闲置超时，自动结束：{t['handoff_id']}")
+
     if not targets:
-        return {"timed_out": 0}
+        return {"timed_out": 0, "stale_closed": len(stale_targets)}
 
     for t in targets:
         try:
@@ -399,8 +439,9 @@ def patrol_timeouts() -> Dict:
                        "人工客服暂无人接入，已记录您的请求并升级通知主管。",
                        handoff_id=t["handoff_id"])
 
-    print(f"[HANDOFF] 超时巡检：{len(targets)} 单已标记 timeout 并升级通知")
-    return {"timed_out": len(targets)}
+    print(f"[HANDOFF] 超时巡检：{len(targets)} 单已标记 timeout 并升级通知"
+          + (f"，{len(stale_targets)} 单接管闲置已自动结束" if stale_targets else ""))
+    return {"timed_out": len(targets), "stale_closed": len(stale_targets)}
 
 
 # ============================================================
@@ -450,6 +491,15 @@ def stats() -> Dict:
     }
 
 
+# 静默时返回的内容。
+#
+# ⚠️ 不能用空字符串！网关把「非空的 completion」当成一次成功的生成，
+# 拿到 content="" 会判定为失败，并给用户回一句
+# 「⚠️ Agent couldn't generate a response. Please try again.」——
+# 那比复读还糟。零宽空格不是可见字符，但字符串非空，网关会正常收下。
+SILENT = "\u200b"
+
+
 def mute_reply_text(handoff: Optional[Dict] = None) -> str:
     """AI 静默期间给用户的提示文案。"""
     who = (handoff or {}).get("claimed_by_name") or "客服"
@@ -457,30 +507,33 @@ def mute_reply_text(handoff: Optional[Dict] = None) -> str:
 
 
 def muted_reply(handoff: Optional[Dict]) -> str:
-    """静默期间**要不要回话、回什么**。返回空串表示保持安静。
+    """静默期间**要不要回话、回什么**。
+
+    返回 SILENT（零宽空格）表示「保持安静」；返回普通文本表示要提示。
+    **永远不会返回空字符串** —— 空串会被网关判定为生成失败。
 
     模式由 HANDOFF_MUTED_MODE 控制：
 
-      never  （默认）完全不回。
+      never  （默认）不提示，只回一个零宽空格。
              坐席认领时已经私聊告诉过用户「客服已接入」，
              之后用户每来一条都回「正在为您服务」纯属噪音 ——
              用户在等的是**坐席的答复**，不是机器人的复读。
 
-      first  本次接管只回一次，之后安静。
+      first  本次接管只提示一次，之后保持安静。
              适合认领通知可能发不出去的场景。
 
-      always 每条都回（旧行为，建议只在调试时用）。
+      always 每条都提示（旧行为，建议只在调试时用）。
 
     `_notified` 由 before_turn() 注入，表示本次接管是否已经提示过用户。
     """
     if not handoff:
-        return ""
+        return SILENT
     mode = str(getattr(get_settings(), "handoff_muted_mode", "never") or "never").strip().lower()
     if mode == "always":
         return mute_reply_text(handoff)
     if mode == "first":
-        return "" if handoff.get("_notified") else mute_reply_text(handoff)
-    return ""
+        return SILENT if handoff.get("_notified") else mute_reply_text(handoff)
+    return SILENT
 
 
 def _muted_notice_sent(handoff_id: str) -> bool:

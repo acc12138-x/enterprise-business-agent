@@ -132,11 +132,11 @@ async def stream_run(thread_id: str, request: Request,
         yield sse("status", {"type": "status", "message": "开始处理"})
 
         if muted:
-            # 静默期间默认【不回话】（HANDOFF_MUTED_MODE，默认 never）：
-            # 坐席认领时已经私聊告知过用户，之后每条都回「正在为您服务」
-            # 只是噪音 —— 用户在等的是坐席的答复。
+            # 静默期间默认只回一个零宽空格（HANDOFF_MUTED_MODE，默认 never）。
+            # ⚠️ 不能返回空字符串 —— 网关把空 content 判定为生成失败，
+            # 会给用户回「Agent couldn't generate a response」。
             _ans = _hs.muted_reply(muted)
-            if _ans:
+            if _ans != _hs.SILENT:
                 _hs.record_message(thread_id, "assistant", _ans,
                                    handoff_id=muted["handoff_id"])
             yield sse("terminal", {

@@ -71,7 +71,14 @@
         </el-form-item>
 
         <el-form-item label="负责人">
-          <el-select v-model="filters.owner_id" clearable placeholder="全部" style="width:170px;" @change="load">
+          <el-select
+            v-model="filters.owner_id"
+            clearable
+            filterable
+            placeholder="全部"
+            style="width:170px;"
+            @change="load"
+          >
             <el-option
               v-for="p in pool" :key="p.id" :value="p.id"
               :label="p.name + (p.job ? '（' + p.job + '）' : '')"
@@ -227,6 +234,7 @@
           <el-select
             v-model="addForm.owner_id"
             clearable
+            filterable
             placeholder="留空 = 自动分配（按进行中线索数挑销售）"
             style="width:100%;"
           >
@@ -333,6 +341,7 @@
             <el-select
               v-model="editForm.owner_id"
               clearable
+              filterable
               placeholder="未分配"
               style="width:220px;"
             >

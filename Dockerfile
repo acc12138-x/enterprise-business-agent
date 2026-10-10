@@ -25,7 +25,17 @@ WORKDIR /app
 
 # ---------- 依赖（单独一层，利用构建缓存）----------
 COPY requirements-prod.txt .
-RUN pip install -r requirements-prod.txt -i https://mirrors.aliyun.com/pypi/simple/
+#
+# ⚠️ 必须配多个 PyPI 源互为兜底。
+# 只写一个镜像源会让整个构建挂掉 —— 国内镜像经常出现「索引里有这个版本、
+# 但对应的文件 404」的残缺情况。真实踩过：阿里云镜像上
+# pydantic-2.13.5 的 wheel 文件 404，导致 docker build 直接失败。
+# 清华源作主源（国内快且是全量镜像），阿里云与官方 PyPI 兜底。
+RUN pip install -r requirements-prod.txt \
+      -i https://pypi.tuna.tsinghua.edu.cn/simple \
+      --extra-index-url https://mirrors.aliyun.com/pypi/simple/ \
+      --extra-index-url https://pypi.org/simple \
+      --retries 5 --timeout 60
 
 # ---------- 代码 ----------
 COPY app/ ./app/

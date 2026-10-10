@@ -6,7 +6,16 @@ from app.workflows.state import AgentState
 
 CONFIDENCE_THRESHOLD = 0.5
 HIGH_RISK_INTENTS = {"human", "complaint"}
-SKIP_CONFIDENCE_INTENTS = {"ticket", "order_query", "logistics", "engineer_query"}
+
+# 低置信度时【跳过】人工确认的意图。
+#
+# ⚠️ ticket（报修建单）**刻意不在这里** —— 它是会真的写库、真的派单的
+#    高风险动作：意图识别不准却照样建单，既会产生脏数据，用户也会卡住
+#    等一个不存在的工程师。宁可多问一句「您是XX型号吗」。
+#
+#    留在里面的三类都是**只读查询**（查订单 / 查物流 / 查工程师），
+#    就算意图判错也只是答非所问，没有副作用，为省一次确认而跳过。
+SKIP_CONFIDENCE_INTENTS = {"order_query", "logistics", "engineer_query"}
 
 
 def need_hitl(state: AgentState) -> bool:

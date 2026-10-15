@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     min_relevance_score: float = 0.55
     min_vector_score: float = 0.3
 
+    # 反思与重试：首次检索未过阈值时，换一种改写再试几次。
+    # 0 = 关闭（恢复成"一次检索定生死"的旧行为）。
+    # 每次重试都是一轮完整召回（混合召回 + 重排），会消耗 embedding 调用，
+    # 所以默认只允许 1 次 —— 覆盖面与成本之间取的折中。
+    rag_retry_max: int = 1
+
     # Redis
     redis_host: str = "127.0.0.1"
     redis_port: int = 6379

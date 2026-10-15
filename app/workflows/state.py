@@ -42,6 +42,9 @@ class AgentState(TypedDict, total=False):
 
     # RAG
     query_rewritten: str
+    # 反思与重试的每轮记录：[{attempt, query, hits, top_score, passed}, ...]
+    # 保留下来是为了可观测 —— 能回答"这次为什么拒答""改写到第几轮才命中"
+    rag_attempts: List[Dict]
     retrieved: List[Dict]
     answer: str
     citations: List[Dict]

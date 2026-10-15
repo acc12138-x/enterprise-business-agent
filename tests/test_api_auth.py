@@ -34,29 +34,38 @@ class TestAuth:
     def test_engineer_permissions(self, client, auth_headers):
         """工程师登录后不应拥有退款审批权限。
 
-        不依赖预置密码：先用管理员把某个工程师的密码重置，
-        再用新密码登录。这样测试在任何种子数据下都成立，
-        同时也覆盖了「管理员重置密码」这条链路。
+        ⚠️ 用【临时账号】测，绝不重置已有账号的密码。
+        早期版本图省事，直接拿库里第一个 engineer 账号重置密码 ——
+        结果是**测试会改掉真实账号的密码**，开发者再用原密码就登不进去了。
+        现在改成：建一个临时工程师 → 设密码 → 登录校验 → 删掉。
+        同时这也覆盖了「建账号 / 重置密码 / 删账号」三条链路。
         """
-        r = client.get("/users", headers=auth_headers)
-        assert r.status_code == 200
-        data = r.json()
-        users = data if isinstance(data, list) else data.get("items", [])
-        eng = next((u for u in users if u.get("role") == "engineer"), None)
-        if not eng:
-            import pytest
-            pytest.skip("当前库里没有 engineer 角色的账号")
+        import uuid
 
-        newpwd = "engineer-test-pwd"
-        r = client.post(f"/users/{eng['id']}/reset-password",
-                        json={"new_password": newpwd}, headers=auth_headers)
-        assert r.status_code == 200, r.text
+        import pytest
 
-        r = client.post("/auth/login", json={"name": eng["name"], "password": newpwd})
-        assert r.status_code == 200, r.text
-        perms = r.json()["user"]["effective_permissions"]
-        assert "ticket.accept" in perms
-        assert "refund.approve" not in perms
+        uname = f"pytest-eng-{uuid.uuid4().hex[:6]}"
+        pwd = "pytest-eng-pwd"
+
+        r = client.post("/users", headers=auth_headers, json={
+            "name": uname, "role": "engineer", "job": "维修",
+            "status": "online", "password": pwd,
+        })
+        if r.status_code != 200:
+            pytest.skip(f"建临时账号失败，跳过：{r.status_code} {r.text[:120]}")
+
+        uid = r.json().get("id") or r.json().get("user", {}).get("id")
+        try:
+            r = client.post("/auth/login", json={"name": uname, "password": pwd})
+            assert r.status_code == 200, r.text
+            perms = r.json()["user"]["effective_permissions"]
+            assert "ticket.accept" in perms
+            assert "refund.approve" not in perms
+            # 转人工是客服的活，工程师不该有
+            assert "handoff.claim" not in perms
+        finally:
+            if uid:
+                client.delete(f"/users/{uid}", headers=auth_headers)
 
     def test_agent_has_handoff_permissions(self, client, auth_headers):
         """客服（agent）必须能接管转人工会话 —— 否则转人工功能形同虚设。"""

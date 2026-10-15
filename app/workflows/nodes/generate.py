@@ -607,15 +607,22 @@ def generate_node(state: AgentState) -> AgentState:
     qtype = _classify_question(question)
     filtered = _filter_chunks(chunks, qtype)
 
-    # 精准拒答：qtype 明确但库里没这类内容
+    # ⚠️ 章节标题过滤是**精度增强，不是硬门槛**。
+    #
+    # 它按小标题匹配问题类型（原因/现象/步骤…），只在文档**恰好**有这类
+    # 小标题时有效。一旦文档没有（例如一份操作手册根本不会写「步骤」二字），
+    # 过滤就必然为空 —— 于是**检索明明命中了也照样拒答**。
+    #
+    # 真实故障：retrieval 打出 `top=0.7185 passed=True`（15 条命中），
+    # 用户收到的却是「暂无相关依据。您问的这类内容知识库里没有记录。」
+    #
+    # 改成：过滤为空时**回退用全部片段**，把"该不该答"交给 prompt 判断 ——
+    # prompt 里本来就写了「如果片段里没有相关内容，直接回复：暂无相关依据」，
+    # 模型有能力再拒一次。这里不该抢在它前面一刀切。
     if not filtered and qtype not in ("generic",):
-        print(f"[GEN:{trace}] filter miss (qtype={qtype}), reject. chunks={len(chunks)}")
-        return {
-            **state,
-            "answer": f"暂无相关依据。您问的{'原因' if qtype == 'cause' else '这类内容'}知识库里没有记录。",
-            "citations": [],
-            "flow_status": "rejected",
-        }
+        print(f"[GEN:{trace}] 标题过滤为空 (qtype={qtype})，回退使用全部片段 "
+              f"chunks={len(chunks)}")
+        filtered = chunks
 
     # qtype=generic 或 filter 成功
     if not filtered:

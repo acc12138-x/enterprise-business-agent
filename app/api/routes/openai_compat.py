@@ -14,7 +14,7 @@ from langgraph.types import Command
 
 from app.api.deps import get_gateway_caller
 from app.workflows.graph import graph
-from app.services.permission import check_feishu_command
+from app.services.permission import check_feishu_command, has_perm
 
 router = APIRouter(prefix="/v1", tags=["openai-compat"])
 
@@ -278,7 +278,10 @@ _CMD_PENDING_RE = _re_cmd.compile(
 
 _CMD_RE = _re_cmd.compile(
     r"^[\s@＠]*(?:业务助手[\s@＠]*)?"
-    r"(?P<action>开始处理|开始|接单|接受|处理|完成|解决|关闭|拒单|拒绝|改派)"
+    # ⚠️ 交替是"先匹配先赢"：长词必须排在短词前面，
+    #    否则「开始处理」会被「开始」吃掉、「关闭工单」会被「关闭」吃掉。
+    r"(?P<action>开始处理|开始|标记解决|解决|完成|关闭工单|关闭"
+    r"|接单|接受|受理|处理|拒单|拒绝|改派)"
     r"[\s@＠]*"
     r"(?P<ticket>[A-Za-z][A-Za-z0-9]{5,31})"
     r"(?:[\s@＠]+(?P<extra>.+?))?"
@@ -286,13 +289,37 @@ _CMD_RE = _re_cmd.compile(
 )
 
 _ACTION_MAP = {
-    "接单": "accept", "接受": "accept", "处理": "accept",
-    "开始处理": "start", "开始": "start",
-    "完成": "resolve", "解决": "resolve",
-    "关闭": "close",
+    "接单": "accept", "接受": "accept", "受理": "accept",
+    # ⚠️ 「处理」映射到 start 而不是 accept —— 工程师说「处理 XXX」
+    #    想表达的是"开始干活"，不是"接单"。原来映射到 accept，
+    #    在 accepted 状态下会报「不允许从 accepted 流转到 accepted」，
+    #    让人以为这个功能坏了。
+    "开始处理": "start", "开始": "start", "处理": "start",
+    "完成": "resolve", "解决": "resolve", "标记解决": "resolve",
+    "关闭": "close", "关闭工单": "close",
     "拒单": "reject", "拒绝": "reject",
     "改派": "reassign",
 }
+
+# 各状态下"下一步能做什么" —— 用于「我的工单」里给出可操作提示。
+# 没有这张表，工程师看到的就是一串光秃秃的单号，压根不知道能发指令操作。
+_NEXT_ACTION_HINT = {
+    "pending":     ("等待派单", None),
+    "assigned":    ("待接单", "接单"),
+    "accepted":    ("已接单，可开始处理", "开始处理"),
+    "in_progress": ("处理中", "解决"),
+    "resolved":    ("已解决，可关闭", "关闭"),
+    "rejected":    ("已拒单，等待重派", None),
+    "closed":      ("已关闭", None),
+    "cancelled":   ("已取消", None),
+}
+
+_CMD_HELP_RE = _re_cmd.compile(
+    r"^[\s@＠]*(?:业务助手[\s@＠]*)?"
+    r"(?P<action>命令|指令|帮助|help|怎么用|能用什么|功能)"
+    r"[\s@＠]*(?:业务助手)?[\s@＠]*$",
+    _re_cmd.I,
+)
 
 
 _CN_STATUS = {
@@ -304,6 +331,45 @@ _CN_ACTION = {
     "accept": "接单", "start": "开始处理", "resolve": "标记完成",
     "close": "关闭", "reject": "拒单", "reassign": "改派",
 }
+
+
+def _help_text(user: dict = None) -> str:
+    """按角色列出可用指令。
+
+    这张清单以前不存在 —— 结果是「飞书里能操作工单」这个能力
+    只有读过代码的人知道，工程师在飞书里发什么都像没反应，
+    自然以为功能坏了（真实反馈：「处理中状态无法有效使用」）。
+    把清单直接递到他手上，比写文档有效得多。
+    """
+    NL = chr(10)
+    perms = (user or {}).get("effective_permissions") or ["*"]
+
+    def can(p: str) -> bool:
+        return has_perm(perms, p)
+
+    lines = ["📖 **可用指令**", ""]
+    lines.append("**查工单**")
+    lines.append("- `我的工单` —— 列出我手上的工单，并提示下一步能做什么")
+    lines.append("- `工单详情 <工单号>` —— 看某个工单的完整信息")
+    lines.append("- `催单 <工单号>` —— 加急，SLA 压到 2 小时内")
+
+    if can("ticket.accept"):
+        lines += ["", "**处理工单**"]
+        lines.append("- `接单 <工单号>` —— 待接单 → 已接单")
+        lines.append("- `开始处理 <工单号>` —— 已接单 → 处理中")
+    if can("ticket.resolve"):
+        lines.append("- `解决 <工单号> [备注]` —— 标记解决")
+        lines.append("- `关闭 <工单号>` —— 关闭工单")
+    if can("ticket.reject"):
+        lines.append("- `拒单 <工单号> [原因]` —— 拒单，系统自动重派给别人")
+
+    if can("refund.approve"):
+        lines += ["", "**退款审批**"]
+        lines.append("- `待审批` —— 查看待审批的退款单")
+        lines.append("- `同意 <退款单号>` / `驳回 <退款单号> [原因]`")
+
+    lines += ["", "**其他**", "- `转人工` —— 需要人工客服时使用"]
+    return NL.join(lines)
 
 
 def _friendly_transition_error(ticket_id: str, action: str, exc) -> str:
@@ -445,7 +511,10 @@ def _handle_feishu_command(text: str, sender_open_id: str) -> Optional[str]:
                 ).scalars().all()
                 tickets = [t.to_dict() for t in rows]
             if not tickets:
-                return "👤 " + user["name"] + "，您当前没有进行中的工单。"
+                return (
+                    "👤 " + user["name"] + "，您当前没有进行中的工单。"
+                    + chr(10) + chr(10) + _help_text(user)
+                )
             NL = chr(10)
             lines = ["👤 **" + user["name"] + "** 进行中工单（" + str(len(tickets)) + " 个）：", ""]
             for t in tickets[:8]:
@@ -453,6 +522,14 @@ def _handle_feishu_command(text: str, sender_open_id: str) -> Optional[str]:
                 dev = t.get("device_model") or "待补"
                 err = t.get("error_code") or "待补"
                 lines.append("- `" + t["ticket_id"] + "` " + st + "  " + dev + "  " + err)
+                # ★ 关键：直接告诉工程师下一步该发什么指令。
+                #   没有这句，他看到的只是一串单号，不知道可以操作。
+                label, cmd = _NEXT_ACTION_HINT.get(t["status"], ("", None))
+                if cmd:
+                    lines.append("  → 可回复「**" + cmd + " " + t["ticket_id"] + "**」"
+                                 + ("（" + label + "）" if label else ""))
+            lines.append("")
+            lines.append("发「**命令**」可查看全部可用指令。")
             return NL.join(lines)
         except Exception as e:
             return "❌ 查询我的工单失败：" + str(e)
@@ -528,6 +605,17 @@ def _handle_feishu_command(text: str, sender_open_id: str) -> Optional[str]:
             )
         except Exception as e:
             return "❌ 催单失败：" + str(e)
+
+    # 指令清单（帮助）—— 放在 _CMD_RE 之前：它不需要工单号，
+    # 而且「命令」这类词不该被当成动作指令去解析
+    mh = _CMD_HELP_RE.match(text)
+    if mh:
+        try:
+            _c = check_feishu_command(sender_open_id, "")
+            return _help_text(_c.get("user") or {})
+        except Exception as e:
+            print("[HELP] 生成指令清单失败: " + str(e))
+            return _help_text({})
 
     m = _CMD_RE.match(text)
     if not m:

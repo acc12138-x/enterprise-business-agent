@@ -35,6 +35,39 @@ def _strip_openclaw_wrapper(text: str) -> str:
     return real
 
 
+# 飞书会话 id 前缀：oc_ = 群聊(open_chat_id)，ou_ = 用户(open_id)。
+_GROUP_CHAT_PREFIX = "oc_"
+
+
+def build_session_key(
+    session_id: Optional[str],
+    session_id_camel: Optional[str],
+    user: Optional[str],
+    chat_id: Optional[str],
+    sender_id: Optional[str],
+) -> str:
+    """决定会话标识 —— 群聊必须按「群 + 人」隔离。
+
+    曾经直接用 `... or chat_id`，而群聊的 chat_id 是**群 ID**（oc_...），
+    与发送者无关。后果（依据线上日志确认）：
+
+        同一个群里 A、B 两人先后跟机器人说话，**共用同一段多轮上下文
+        与同一个 HITL 断点** —— A 提到的订单号、手机号会出现在 B 的上下文里。
+
+    所以群里把发送者拼进去。**发送者放在前面**是有意的：
+    `_thread_id()` 取 key 的前 20 字符做线程 id，而 `oc_xxx` 这种群 ID
+    前 20 字符几乎全是固定前缀，把人放在后面会被截掉、导致全群又撞回一起；
+    放在前面则天然按人区分。
+
+    私聊**保持原样**（不拼 sender），避免让存量私聊会话因线程 id 变化而重置。
+    """
+    base = (session_id or session_id_camel or user or chat_id or "").strip()
+    sender = (sender_id or "").strip()
+    if base and sender and base.startswith(_GROUP_CHAT_PREFIX):
+        return f"{sender}:{base}"
+    return base
+
+
 def _extract_chat_id(text: str) -> Optional[str]:
     """从元数据提取 chat_id。"""
     if not text:
@@ -770,7 +803,8 @@ async def chat_completions(req: ChatCompletionRequest, request: Request,
     user_msg = _strip_openclaw_wrapper(raw_msg)
     chat_id = _extract_chat_id(raw_msg)
     sender_id = _extract_sender_id(raw_msg)
-    session_key = req.session_id or req.sessionId or req.user or chat_id
+    session_key = build_session_key(req.session_id, req.sessionId, req.user,
+                                   chat_id, sender_id)
 
     # 把 sender_id 和 chat_id 塞到 slots 供 my_tickets 节点用
     extra_slots = {"_sender_open_id": sender_id or "", "_chat_id": chat_id or ""}

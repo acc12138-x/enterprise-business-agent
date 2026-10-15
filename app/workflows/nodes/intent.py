@@ -85,8 +85,19 @@ def _extract_slots(text: str) -> Dict:
         if m2:
             slots["phone"] = m2.group(0)
 
-    if "error_code" in slots and "device_model" not in slots:
-        slots["device_model"] = slots["error_code"]
+    # ⚠️ 这里**不能**把 error_code 复制成 device_model。
+    #
+    # 曾经有这么一行（目的是"让工单显得信息完整"，好通过 is_complete 校验）：
+    #     if "error_code" in slots and "device_model" not in slots:
+    #         slots["device_model"] = slots["error_code"]
+    #
+    # 后果是**凭空编造型号**：用户只说「创建工单E300损坏」，
+    # 工单就变成「型号=E300 故障码=E300」，两个字段都是故障码。
+    # 于是 is_complete 通过、追问被跳过，工程师拿着一个错误的型号去修。
+    # 真实数据：TB8DEA7C1 型号=E200 故障码=E200、TF4E4FB0E 型号=E300 故障码=E300。
+    #
+    # 正确做法是**留空** —— 型号缺失会被记进 missing_fields，
+    # 触发"请补充设备型号"的追问。宁可多问一句，也不要给错的信息。
 
     print(f"[SLOT] text={text[:100]!r} -> {slots}")
     return slots
@@ -271,7 +282,10 @@ def intent_node(state: AgentState) -> AgentState:
             return {
                 **state,
                 "intent": "ticket",
-                "slots": {"error_code": corrected, "device_model": corrected},
+                # 用户从候选列表里确认的是一个**故障码**，不是型号。
+                # 早先这里把同一个值同时塞进 device_model，等于凭空编造型号
+                # （与下面的复制是同一个错）。型号留空，交给追问补。
+                "slots": {"error_code": corrected},
                 "messages": new_messages,
                 "flow_status": "running",
                 "hitl_pending": False,

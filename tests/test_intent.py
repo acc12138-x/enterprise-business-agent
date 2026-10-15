@@ -26,8 +26,21 @@ class TestSlotExtraction:
     def test_amount(self):
         assert _extract_slots("退款 500 元").get("amount") == 500.0
 
-    def test_error_code_as_device_fallback(self):
-        assert _extract_slots("E102 报警").get("device_model") == "E102"
+    def test_error_code_does_not_become_device_model(self):
+        """★ 这条曾经断言的是**相反**的行为，等于把 bug 锁死在测试里。
+
+        旧版本：
+            assert _extract_slots("E102 报警").get("device_model") == "E102"
+        当时 intent 节点里有一行"error_code 兜底成 device_model"，
+        本意是让工单显得信息完整，实际是**凭空编造型号** ——
+        用户只说了故障码，工单却有了型号，于是跳过追问，
+        工程师拿着错误型号去修（真实数据：型号=E200 故障码=E200）。
+
+        现在断言：故障码就该待在故障码槽位，型号留空由追问补齐。
+        """
+        slots = _extract_slots("E102 报警")
+        assert slots.get("error_code") == "E102"
+        assert "device_model" not in slots
 
 
 class TestConsultQuery:

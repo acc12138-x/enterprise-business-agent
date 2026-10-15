@@ -586,16 +586,38 @@ RAG 混合召回与拒答 · 17 类意图识别 · 规则引擎 · 工单状态�
 
 可用 `HANDOFF_MUTED_MODE` 在「空气泡」和「复读」之间取舍（默认 `never`＝空气泡）。
 
-#### 2. 网关未传 `session_key`，群聊的会话划分不准确
+#### 2. 群聊里所有成员共享同一个会话线程
 
-实测网关发来的每次请求都是 `chat_id=None session_key=None`，因此后端只能退化为
-**按发送者 `sender:<open_id>` 聚合会话**：
+**（本条曾写错，2026-10 依据线上日志更正）**
+
+早期版本的文档写的是"网关不传 `session_key`，群聊会按发送者拆开" ——
+**这与实际行为相反**，实测日志：
+
+```
+[REQ] chat_id=oc_b96741016f9871ec34ea29974e789abc session_key=oc_b96741016f9871ec34ea29974e789abc
+```
+
+真实链路是：
+
+```python
+# openai_compat.py
+session_key = req.session_id or req.sessionId or req.user or chat_id   # ← 有 chat_id 兜底
+_thread_id(session_key, sender_id)   # session_key 非空就直接用它
+```
+
+`chat_id` **总会兜上**，所以后端拿到的 `session_key` 实际上就是
+**群 ID**（`oc_...`），与发送者无关 —— 于是：
 
 - ✅ **私聊**：一人一会话，行为正确
-- ⚠️ **群聊**：同一个群里的不同人会被拆成**不同会话**（各自独立的多轮上下文与 HITL 断点）
+- 🔴 **群聊**：**全群共享一个会话线程**。同一个群里 A、B 两人先后提问，
+  他们共用同一段多轮上下文与同一个 HITL 断点 —— 上下文会互相串
 
-要修得对，需要从网关侧拿到真正的会话标识（群 id）。相关代码见
-`app/api/routes/openai_compat.py` 的 `_thread_id()`，已为「截断碰撞」做了防护。
+`_thread_id()` 里为「无标识」准备的 `sender:<open_id>` 与随机值两条兜底，
+在当前网关行为下**基本是死代码**（保留作为安全网）。
+
+**修法**（尚未实施，需评估）：群聊场景把 key 拼成 `f"{chat_id}:{sender_id}"`，
+让会话回归"按人划分"。代价是**存量会话会因线程 id 变化而重置**
+（多轮上下文与未完成的 HITL 断点丢失），需要在低峰期做。
 
 #### 3. 其他
 

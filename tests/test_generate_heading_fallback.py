@@ -130,3 +130,34 @@ class TestGenerateFallsBackInsteadOfRejecting:
         st["flow_status"] = "rejected"
         out = gen.generate_node(st)
         assert out.get("flow_status") == "rejected"
+
+
+class TestCitationLabel:
+    """引用标注要显示**文件名**，不是入库时生成的内部编号。
+
+    真实反馈：答案是「...检查是否伴随其他联动报警[doc-ac8hmk]」——
+    用户既看不懂 doc-ac8hmk 是什么，也没法拿它去核对出处。
+    """
+
+    def test_prefers_source_over_doc_id(self, gen):
+        meta = {"doc_id": "doc-ac8hmk", "source": "操作手册.md"}
+        assert gen._citation_label(meta, "1") == "操作手册.md"
+
+    def test_strips_directory(self, gen):
+        meta = {"doc_id": "doc-x", "source": "docs/15-操作手册.md"}
+        assert gen._citation_label(meta, "1") == "15-操作手册.md"
+
+    def test_falls_back_to_doc_id_when_no_source(self, gen):
+        assert gen._citation_label({"doc_id": "doc-ac8hmk"}, "1") == "doc-ac8hmk"
+
+    def test_falls_back_to_index_when_nothing(self, gen):
+        assert gen._citation_label({"source": "", "doc_id": ""}, "7") == "7"
+
+    def test_end_to_end_replacement(self, gen):
+        chunks = [
+            {"chunk_id": "a", "metadata": {"doc_id": "doc-1", "source": "操作手册.md"}},
+            {"chunk_id": "b", "metadata": {"doc_id": "doc-2", "source": "故障码手册.pdf"}},
+        ]
+        out = gen._replace_citation_numbers("先检查电压[1]，再复位[2]。", chunks)
+        assert out == "先检查电压[操作手册.md]，再复位[故障码手册.pdf]。"
+        assert "doc-1" not in out and "doc-2" not in out

@@ -232,16 +232,33 @@ def clean_answer(text: str) -> str:
 
 
 # ============================================================
-# 引用替换：[1] -> [doc_id]
+# 引用替换：[1] -> [文件名]
 # ============================================================
+def _citation_label(meta: Dict, fallback: str) -> str:
+    """引用的展示名：优先用**文件名**，而不是入库时生成的内部编号。
+
+    真实反馈：答案是「...检查是否伴随其他联动报警[doc-ac8hmk]」——
+    `doc-ac8hmk` 是入库时生成的编号，用户既看不懂、也没法拿它核对，
+    对"这段话出自哪份文档"毫无帮助。显示「操作手册.md」才有意义。
+
+    所以 source（原始文件名）优先；doc_id 只在没有 source 时兜底。
+    """
+    raw = (meta.get("source") or "").strip()
+    if raw:
+        # 去掉目录部分，只留文件名（长路径在答案里很难看）
+        name = re.split(r"[\\/]", raw)[-1].strip()
+        if name:
+            return name
+    return (meta.get("doc_id") or "").strip() or fallback
+
+
 def _replace_citation_numbers(answer: str, chunks: List[Dict]) -> str:
     if not answer or not chunks:
         return answer
     mapping = {}
     for i, c in enumerate(chunks[:5], 1):
         meta = c.get("metadata", {}) or {}
-        label = meta.get("doc_id") or meta.get("source") or str(i)
-        mapping[str(i)] = label
+        mapping[str(i)] = _citation_label(meta, str(i))
     return re.sub(r"\[(\d+)\]", lambda m: f"[{mapping.get(m.group(1), m.group(1))}]", answer)
 
 

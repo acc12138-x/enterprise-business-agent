@@ -295,8 +295,24 @@ docker logs -f edge-caddy --tail 50
 # --- 磁盘（镜像/构建缓存最容易堆满）---
 df -h
 docker system df
-docker system prune -af --volumes   # ⚠️ --volumes 会删未使用的卷，确认后再执行
+
+# ⚠️⚠️ 下面这条慎用 —— 它会删掉【所有未被容器使用的镜像】和【全部构建缓存】，
+#      不只是"清理垃圾"。真实踩过：
+#        · python:3.12-slim 被删 → 下次构建必须联网重拉，镜像源一抖就构建失败
+#        · apt / pip 中间层全没了 → 重建时依赖要重新下载 3~8 分钟
+#        · 隐藏问题会在这时暴露：单一 PyPI 源文件 404 导致 build 直接挂掉
+#      只想清悬空镜像（安全得多）请用：
+#        docker image prune          # 只删 <none> 悬空镜像
+#        docker builder prune        # 只清构建缓存
+#      确认要释放全部空间时再执行下面这条：
+docker system prune -af --volumes   # ⚠️ --volumes 还会删未使用的卷，确认后再执行
 ```
+
+> **被 `prune -a` 清掉之后怎么快速恢复**：先把基础镜像拉回来，再构建。
+> ```bash
+> docker pull python:3.12-slim && docker pull node:20-alpine
+> ```
+> 跳过 `-a` 的日常清理（`docker image prune`）不会动基础镜像，推荐日常用它。
 
 **常见问题**
 

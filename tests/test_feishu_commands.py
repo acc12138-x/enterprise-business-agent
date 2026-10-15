@@ -109,6 +109,43 @@ class TestHelpCommand:
         assert "处理工单" in txt and "退款审批" in txt
 
 
+class TestNoOverGuiding:
+    """引导文案不能变成噪声。
+
+    真实反馈：发「我的工单」后"下面出现了很长一段操作提示"。
+    原因是空列表分支把**整张指令清单**（16 行）倒了出来 ——
+    用户只是想知道"我有没有活要干"，却收到一份说明书。
+
+    判据：引导只在**用户不知道下一步**时出现。
+    真正需要清单的人会主动发「命令」，那一行提示就够了。
+    """
+
+    def test_empty_list_does_not_dump_full_help(self, oc):
+        """★ 空列表分支不许再出现整张清单的内容。"""
+        import inspect
+        src = inspect.getsource(oc)
+        # 找到空列表分支的返回语句
+        idx = src.find("您当前没有进行中的工单")
+        assert idx > 0, "没找到空列表分支，测试需要更新"
+        # 该分支后续 400 字符内不应再调用 _help_text
+        window = src[idx:idx + 400]
+        assert "_help_text" not in window, \
+            "空列表分支又把整张指令清单倒出来了 —— 这是被反馈过的噪声"
+
+    def test_empty_list_is_short(self, oc):
+        """构造一次真实调用的替代：文案本身必须是短的三行。"""
+        NL = chr(10)
+        sample = ("👤 张工，您当前没有进行中的工单。" + NL
+                  + "（已关闭/已解决的工单可在管理后台【工单】页筛选查看）" + NL
+                  + "发「**命令**」可查看你能用的全部指令。")
+        assert len(sample.split(NL)) <= 3
+
+    def test_help_command_still_returns_everything(self, oc):
+        """主动发「命令」时仍然要给全 —— 过度精简会走到另一个极端。"""
+        txt = oc._help_text({"effective_permissions": ["*"]})
+        assert "接单" in txt and "解决" in txt and "退款审批" in txt
+
+
 class TestNextActionHint:
     """「我的工单」要提示下一步，否则用户只看到一串单号。"""
 

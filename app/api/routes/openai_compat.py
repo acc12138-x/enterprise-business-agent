@@ -544,9 +544,17 @@ def _handle_feishu_command(text: str, sender_open_id: str) -> Optional[str]:
                 ).scalars().all()
                 tickets = [t.to_dict() for t in rows]
             if not tickets:
+                # ⚠️ 这里**不要**倒出整张指令清单。
+                # 用户发「我的工单」只是想知道"我有没有活要干"，
+                # 回 20 行指令清单属于答非所问，而且每次空列表都来一遍，
+                # 引导就从"帮助"变成了"噪声"。
+                # 真正需要清单的人会发「命令」—— 那一行提示足够了。
                 return (
                     "👤 " + user["name"] + "，您当前没有进行中的工单。"
-                    + chr(10) + chr(10) + _help_text(user)
+                    + chr(10)
+                    + "（已关闭/已解决的工单可在管理后台【工单】页筛选查看）"
+                    + chr(10)
+                    + "发「**命令**」可查看你能用的全部指令。"
                 )
             NL = chr(10)
             lines = ["👤 **" + user["name"] + "** 进行中工单（" + str(len(tickets)) + " 个）：", ""]
